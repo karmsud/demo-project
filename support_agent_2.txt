@@ -1,0 +1,270 @@
+What changed vs the previous zip
+
+All changes are already wired into the code + markdown:
+
+1. Agent name
+
+Everywhere the agent is now called “GSF IR Support Agent”:
+
+.github/agents/gsf-ir-support.agent.md
+
+All prompts (start-support-session, refresh-troubleshooting-kb, debug-troubleshooting-kb)
+
+README text/instructions
+
+You’ll select GSF IR Support Agent from the Agents dropdown in VS Code.
+
+2. Smarter answering (confidence & modes)
+
+In scripts/answer_troubleshooting_question.py:
+
+Adds a --mode flag:
+
+--mode quick → fewer steps, concise.
+
+--mode deep → more sentences/steps from the section for explanation.
+
+Computes a confidence score and band:
+
+high for score ≥ 0.8
+
+medium for 0.5–0.8
+
+low for < 0.5
+
+The markdown answer now includes:
+
+“Confidence: high/medium/low (score …)”
+
+An extra warning line if confidence is low.
+
+The SKILL + agent instructions tell Copilot:
+
+Use quick by default.
+
+Switch to deep when the user asks “why”, “explain”, etc.
+
+If band is low, call that out and suggest more context/escalation.
+
+3. Query logging
+
+Every call to the answer script now appends to:
+
+.github/skills/troubleshooting-kb/data/query_log.jsonl
+
+Each line is JSON with:
+
+question
+
+error_text
+
+guide_version
+
+top solution IDs/headings/scores
+
+confidence + band
+
+timestamp
+
+So you can later mine:
+
+Which errors users ask about most.
+
+Which queries are consistently low-confidence.
+
+Nothing for you to configure; it happens automatically.
+
+4. Version awareness
+
+build_troubleshooting_kb.py now supports:
+
+--guide-version "v1.0" (optional)
+
+It writes that into guide_embeddings.json and the answer script:
+
+reads it back
+
+includes it in last_answer.json as guide_version
+
+the SKILL + agent instructions tell Copilot to mention which guide version was used in answers.
+
+You just pass --guide-version when you (or the agent via /refresh-troubleshooting-kb) rebuild the KB.
+
+5. Regression test harness
+
+New file: scripts/test_troubleshooting_kb.py
+
+Has a TEST_CASES list you can fill with:
+
+name
+
+question
+
+error_text
+
+expected_section_ids (one or more section IDs from your guide)
+
+It:
+
+Calls answer_troubleshooting_question.py for each test.
+
+Checks whether any expected section ID appears in the top-k.
+
+Prints PASS/FAIL and a summary.
+
+You run it like:
+
+python scripts\test_troubleshooting_kb.py
+
+
+Perfect for sanity checks after updating the guide and rebuilding the KB.
+
+6. KB diff summary
+
+New file: scripts/kb_diff_summary.py
+
+Usage:
+
+python scripts\kb_diff_summary.py ^
+  --old .github/skills/troubleshooting-kb/data/guide_embeddings_old.json ^
+  --new .github/skills/troubleshooting-kb/data/guide_embeddings.json
+
+
+It prints:
+
+counts of old/new sections
+
+list of added headings
+
+list of removed headings
+
+You’d typically:
+
+Save a copy of your old embeddings file before rebuild.
+
+Run this script to see what changed structurally in the KB.
+
+7. Prompts & flows updated for GSF IR Support Agent
+
+You now have three prompts:
+
+start-support-session.prompt.md
+
+For normal users.
+
+Uses GSF IR Support Agent.
+
+Asks for env/module/version, then runs the support workflow.
+
+Encourages the agent to format as:
+
+Summary
+
+Root cause
+
+Step-by-step checklist
+
+Alternatives
+
+References
+
+Guide version + confidence band
+
+refresh-troubleshooting-kb.prompt.md
+
+For admins.
+
+Prompts for new PDF/DOCX paths and guide version.
+
+Runs build_troubleshooting_kb.py with --guide-version.
+
+debug-troubleshooting-kb.prompt.md
+
+For you / devs.
+
+Runs answer script with --top-k 10.
+
+Then shows section IDs, headings, scores to help tune the guide.
+
+8. GSF IR Support Agent instructions tuned
+
+In .github/agents/gsf-ir-support.agent.md:
+
+Name: GSF IR Support Agent
+
+Tools: codebase, search, terminal only.
+
+Rules:
+
+Use troubleshooting-kb skill for error questions.
+
+Never write or change Python.
+
+No web / external search.
+
+Always base answer on last_answer.json from the script.
+
+Behavior:
+
+Ask clarifying questions for missing environment/module/version.
+
+Default to --mode quick, upgrade to deep if they want more explanation.
+
+Show guide version + confidence band.
+
+Offer escalation summary when confidence is low or solutions conflict.
+
+How to use this new zip
+
+Download & unzip
+
+Save and unzip:
+gsf_ir_support_agent.zip
+Open that folder in VS Code.
+
+Create venv & install deps
+
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python -m nltk.downloader punkt
+
+
+Drop your guide
+
+Put:
+
+docs/troubleshooting_guide.pdf
+
+docs/troubleshooting_guide.docx (if you have it)
+
+Build the KB
+
+python scripts\build_troubleshooting_kb.py `
+  --pdf docs/troubleshooting_guide.pdf `
+  --docx docs/troubleshooting_guide.docx `
+  --guide-version "v1.0" `
+  --out-markdown .github/skills/troubleshooting-kb/data/guide_enhanced.md `
+  --out-embeddings .github/skills/troubleshooting-kb/data/guide_embeddings.json `
+  --out-graph .github/skills/troubleshooting-kb/data/guide_graph.json
+
+
+Turn on skills & agents
+
+VS Code settings (JSON):
+
+{
+  "chat.useAgentSkills": true,
+  "chat.useAgentsMdFile": true
+}
+
+
+In Copilot Chat
+
+Choose GSF IR Support Agent from the agents dropdown.
+
+Type /start-support-session to begin a normal support flow.
+
+Type /refresh-troubleshooting-kb when you update the guide.
+
+Type /debug-troubleshooting-kb when you want to inspect retrieval.

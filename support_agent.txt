@@ -1,0 +1,993 @@
+What you get in the zip
+
+Folder structure:
+
+troubleshooting_support_agent/
+  requirements.txt
+  README.md
+
+  docs/
+    # <-- you drop in:
+    # troubleshooting_guide.pdf
+    # troubleshooting_guide.docx
+
+  scripts/
+    build_troubleshooting_kb.py
+    answer_troubleshooting_question.py
+
+  .github/
+    AGENTS.md
+    agents/
+      troubleshooting-support.agent.md
+    prompts/
+      start-support-session.prompt.md
+      refresh-troubleshooting-kb.prompt.md
+    skills/
+      troubleshooting-kb/
+        SKILL.md
+        data/
+          guide_enhanced.md        # generated
+          guide_embeddings.json    # generated
+          guide_graph.json         # generated
+          last_answer.json         # generated
+
+1. CLI interfaces for the two scripts
+1.1 build_troubleshooting_kb.py
+
+Purpose: one-time (or admin) script to turn your PDF/DOCX into:
+
+Enhanced Markdown
+
+Embeddings JSON
+
+Graph JSON
+
+CLI usage (Windows / PowerShell):
+
+python scripts\build_troubleshooting_kb.py `
+  --pdf docs/troubleshooting_guide.pdf `
+  --docx docs/troubleshooting_guide.docx `
+  --out-markdown .github/skills/troubleshooting-kb/data/guide_enhanced.md `
+  --out-embeddings .github/skills/troubleshooting-kb/data/guide_embeddings.json `
+  --out-graph .github/skills/troubleshooting-kb/data/guide_graph.json
+
+
+Flags:
+
+--pdf (optional): path to your troubleshooting guide PDF.
+
+--docx (optional): path to your DOCX.
+
+Script will use DOCX first and then add any extra unique text from PDF.
+
+--out-markdown (required): where to write the enhanced Markdown.
+
+--out-embeddings (required): where to write the embeddings JSON.
+
+--out-graph (required): where to write the NetworkX graph JSON.
+
+What it does:
+
+Reads DOCX (if provided) and PDF (if provided).
+
+Merges text, doing a simple de-dupe.
+
+Detects “sections” using simple heuristics (lines that look like headings).
+
+Builds enhanced Markdown with ## Heading + paragraphs / bullets.
+
+Uses sentence-transformers/all-MiniLM-L6-v2 to embed each section and saves:
+
+{
+  "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+  "sections": [
+    { "id": 0, "heading": "...", "embedding": [ ... ] },
+    ...
+  ]
+}
+
+
+Builds a NetworkX graph:
+
+One node per section (with heading, text, sentences).
+
+Edges between consecutive sections.
+
+Extra edges between sections with overlapping keywords.
+
+Saves the graph as node-link JSON.
+
+1.2 answer_troubleshooting_question.py
+
+Purpose: runtime script used by the agent to answer a question.
+
+CLI usage (Windows / PowerShell):
+
+python scripts\answer_troubleshooting_question.py `
+  --question "Why is my ABC-123 pipeline failing on step 4?" `
+  --error-text "ABC-123: Failed to connect to upstream service..." `
+  --markdown .github/skills/troubleshooting-kb/data/guide_enhanced.md `
+  --embeddings .github/skills/troubleshooting-kb/data/guide_embeddings.json `
+  --graph .github/skills/troubleshooting-kb/data/guide_graph.json `
+  --top-k 5 `
+  --out .github/skills/troubleshooting-kb/data/last_answer.json
+
+
+Optional:
+
+  --screenshot-path path\to\error_screenshot.png
+
+
+Flags:
+
+--question (required): short restatement of the user’s question.
+
+--error-text (optional): raw error / log text.
+
+--screenshot-path (optional): image path for OCR (requires Tesseract + pytesseract).
+
+--markdown (required): path to enhanced Markdown (for future extensions).
+
+--embeddings (required): embeddings JSON from build script.
+
+--graph (required): graph JSON from build script.
+
+--top-k (optional, default 5): number of candidate solutions.
+
+--out (required): output JSON path.
+
+What it does:
+
+Optionally OCRs the screenshot (if path + Tesseract available).
+
+Concatenates error-text + OCR text.
+
+Loads embeddings JSON and graph JSON.
+
+Uses the same sentence-transformers model to embed the combined query.
+
+Computes cosine similarity vs each section, picks top-k sections.
+
+Uses the graph node texts to:
+
+Split text into sentences.
+
+Turn them into “steps” (each sentence becomes one step).
+
+Builds a Markdown answer:
+
+## Suggested solution (Rank 1: ...)
+
+Step-by-step list for the top section.
+
+“Other possible solutions” list for remaining sections.
+
+“References” list with section IDs and headings.
+
+Writes JSON like:
+
+{
+  "question": "...",
+  "error_text": "...",
+  "answer_markdown": "## Suggested solution...\n1. ...",
+  "solutions": [
+    {
+      "rank": 1,
+      "score": 0.93,
+      "section_id": 3,
+      "heading": "Error ABC-123: Connection failure",
+      "steps": [ "Step text...", "..." ]
+    },
+    ...
+  ],
+  "relevant_sections": [
+    { "id": 3, "heading": "Error ABC-123: Connection failure" },
+    ...
+  ],
+  "confidence": 0.93
+}
+
+
+The agent then uses answer_markdown plus solutions to talk to the user.
+
+2. VS Code / Copilot side: SKILL, agent, prompts
+
+All of these are already created in the zip.
+
+2.1 Skill: .github/skills/troubleshooting-kb/SKILL.md
+
+Highlights:
+
+Describes:
+
+Where artifacts live (data/guide_enhanced.md, guide_embeddings.json, guide_graph.json).
+
+Which scripts to use (scripts/build_troubleshooting_kb.py, scripts/answer_troubleshooting_question.py).
+
+Encodes admin workflow:
+
+When you (or an admin) wants to rebuild the KB, Copilot is instructed to run:
+
+python scripts/build_troubleshooting_kb.py ^
+  --pdf docs/troubleshooting_guide.pdf ^
+  --docx docs/troubleshooting_guide.docx ^
+  --out-markdown .github/skills/troubleshooting-kb/data/guide_enhanced.md ^
+  --out-embeddings .github/skills/troubleshooting-kb/data/guide_embeddings.json ^
+  --out-graph .github/skills/troubleshooting-kb/data/guide_graph.json
+
+
+Encodes support workflow:
+
+For user questions, Copilot should run:
+
+python scripts/answer_troubleshooting_question.py ^
+  --question "<short restatement of user question>" ^
+  --error-text "<consolidated text from logs and chat>" ^
+  --markdown .github/skills/troubleshooting-kb/data/guide_enhanced.md ^
+  --embeddings .github/skills/troubleshooting-kb/data/guide_embeddings.json ^
+  --graph .github/skills/troubleshooting-kb/data/guide_graph.json ^
+  --top-k 5 ^
+  --out .github/skills/troubleshooting-kb/data/last_answer.json
+
+
+(Plus --screenshot-path if you save the image and give it a path.)
+
+Hard rules:
+
+Never write/modify Python at runtime.
+
+No web search.
+
+Always answer from guide artifacts.
+
+2.2 Custom Agent: .github/agents/troubleshooting-support.agent.md
+
+Defines the Troubleshooting Support agent:
+
+Tools: codebase, search, terminal (no edit tools, no web).
+
+Instructions:
+
+Use troubleshooting-kb skill for error questions.
+
+Invoke the support/admin workflows as needed.
+
+Present answers as:
+
+Summary
+
+Root cause
+
+Step-by-step fix
+
+Alternative solutions
+
+References (section IDs / headings)
+
+So this is your support persona.
+
+2.3 Prompt files (slash commands)
+
+Both are in .github/prompts/:
+
+start-support-session.prompt.md
+
+/start-support-session in chat.
+
+Uses Troubleshooting Support agent.
+
+Guides the user to give environment, module, version, etc.
+
+Then calls into the skill to run the answer script and formats the reply.
+
+refresh-troubleshooting-kb.prompt.md
+
+/refresh-troubleshooting-kb in chat.
+
+Admin-only flow.
+
+Confirms new PDF/DOCX names and runs the build script.
+
+2.4 AGENTS guardrail: .github/AGENTS.md
+
+Global rules:
+
+Only use data from the guide + artifacts.
+
+No new Python code generation.
+
+No internet.
+
+Reuse scripts in scripts/ and artifacts in .github/skills/troubleshooting-kb/data/.
+
+3. How you actually use it (end-to-end)
+Step 0 – Setup
+
+Unzip the project and open folder in VS Code.
+
+Create venv & install deps:
+
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python -m nltk.downloader punkt
+
+
+Drop your troubleshooting guide into docs/:
+
+docs/troubleshooting_guide.pdf
+
+docs/troubleshooting_guide.docx (if you have it)
+
+Build artifacts (ops / admin step):
+
+python scripts\build_troubleshooting_kb.py `
+  --pdf docs/troubleshooting_guide.pdf `
+  --docx docs/troubleshooting_guide.docx `
+  --out-markdown .github/skills/troubleshooting-kb/data/guide_enhanced.md `
+  --out-embeddings .github/skills/troubleshooting-kb/data/guide_embeddings.json `
+  --out-graph .github/skills/troubleshooting-kb/data/guide_graph.json
+
+Step 1 – Enable skills in VS Code
+
+In VS Code Settings (JSON):
+
+{
+  "chat.useAgentSkills": true,
+  "chat.useAgentsMdFile": true
+}
+
+Step 2 – Use the agent as a user
+
+Open GitHub Copilot Chat.
+
+From the Agents dropdown, pick Troubleshooting Support.
+
+Type:
+
+/start-support-session
+
+
+When asked, provide environment, module, version, and paste your error.
+
+If you want to use OCR: save the screenshot into the workspace and mention its path (“I saved the screenshot as screenshots/error1.png”).
+
+The agent will:
+
+Restate your problem.
+
+Invoke answer_troubleshooting_question.py via terminal using the paths above.
+
+Read last_answer.json.
+
+Present:
+
+Top ranked solution with numbered steps.
+
+Up to 4 additional solutions.
+
+References into the guide.
+
+Step 3 – Refresh KB as an admin
+
+Whenever you have a new version of the troubleshooting guide:
+
+Replace or add new PDF/DOCX in docs/.
+
+In Copilot Chat, with Troubleshooting Support selected, type:
+
+/refresh-troubleshooting-kb
+
+
+Confirm the new file names.
+
+Agent uses the skill to run build_troubleshooting_kb.py and re-builds Markdown, embeddings, graph.
+
+4. Recap of what this gives you
+
+Deterministic design:
+
+Scripts are the single source of truth for build + answer logic.
+
+Agent never free-writes Python.
+
+Token-efficient:
+
+Heavy lifting done in local Python (embedding, search, graph).
+
+LLM orchestrates + formats answers.
+
+Multi-mode reasoning:
+
+Keyword-ish via the graph.
+
+Semantic via embeddings.
+
+Simple step extraction via sentence tokenization.
+
+User experience:
+
+Natural language questions + (optional) screenshots.
+
+Top 5 solutions ranked.
+
+Clear, numbered steps.
+
+If you want, the next thing we can do once you’ve dropped your real guide in is tune:
+
+Section detection heuristics (to align with your real headings/error codes).
+
+The graph construction (e.g., connect errors by code patterns).
+
+The answer formatting (e.g., add severity, estimated time to fix, etc.).
+
+what is this for? python -m nltk.downloader punkt
+
+That command is just a one-time “download the language brain” step for NLTK so our scripts can split text into sentences cleanly. 🙂
+
+What it is
+python -m nltk.downloader punkt
+
+
+nltk = Natural Language Toolkit, a classic Python library for working with text.
+
+punkt = a small pre-trained model inside NLTK used for sentence tokenization (figuring out where one sentence ends and the next begins).
+
+Our scripts use:
+
+from nltk.tokenize import sent_tokenize
+
+
+to turn a big blob of troubleshooting text into a list of sentences → which we then treat as step-like lines when we build the “step-by-step fix”.
+
+Why you need to run it
+
+The punkt model isn’t bundled by default; NLTK downloads it the first time.
+
+If you don’t run the downloader, the first call to sent_tokenize(...) will usually crash with a “Resource punkt not found” error.
+
+So the command:
+
+Downloads the punkt data into your user NLTK data folder.
+
+You only need to do it once per machine / environment (or once per venv if paths differ).
+
+TL;DR
+
+It’s there so that when the agent/script says:
+
+“Break this guide text into steps and show them as 1., 2., 3…”
+
+it can reliably split the guide text into sentences using punkt.
+
+If you want to skip it and see what happens, the scripts do try to auto-download punkt, but running the command explicitly upfront is the clean, predictable way.
+
+Any additional features you think such an agent should have?
+Thought for 10s
+
+Yeah, there are some really nice “next level” features you can add that fit perfectly with how you like to build things: deterministic, token-efficient, and production-ish.
+
+I’ll group them so you can cherry-pick.
+
+1. UX / Support-flow upgrades
+a) Clarifying-question flow
+
+Before it ever runs the answer script, have the agent:
+
+Check for missing basics:
+
+environment (prod/UAT/dev)
+
+app/module name
+
+version/build
+
+brief “what changed recently?”
+
+If anything critical is missing, ask for it first instead of firing the script.
+
+You already have the /start-support-session doing part of this — you could formalize it into a mini checklist in the SKILL:
+
+“Do not call answer_troubleshooting_question.py until you’ve confirmed A, B, C.”
+
+b) Two answer modes: “Quick fix” vs “Deep dive”
+
+You can teach the agent to support two styles:
+
+Default: short Summary + Steps (what you already have).
+
+Deep dive mode: explain why each step matters (using extra sentences from the section).
+
+Mechanically: add a flag to the script like --explain or let the agent do the explanation layer, but encode in instructions:
+
+“If the user says ‘explain’ or ‘why’, use more of the section text to justify each step.”
+
+c) “Show me where in the guide”
+
+Users (and auditors) love this.
+
+The script already outputs relevant_sections.
+
+Extend the answer pattern so the agent can also respond with:
+
+“This answer comes from:
+– Section 4: ‘Error ABC-123: Connection failure’
+– Section 4.1: ‘Checking credentials’”
+
+And optionally paste the exact snippet from guide_enhanced.md when explicitly asked.
+
+2. Reasoning & reliability features
+a) Confidence thresholds & “I don’t know”
+
+Right now you compute a confidence from max similarity. You can:
+
+Define explicit thresholds:
+
+>= 0.8: “Confident” → normal answer.
+
+0.5–0.8: “Low confidence” → answer plus ask the user to confirm specifics.
+
+< 0.5: “Very low confidence” → no fix, just: “I don’t have a reliable match in the guide for this error.”
+
+That protects you from hallucinating a fix that isn’t really in the doc.
+
+b) Multi-strategy search
+
+You’re already doing semantic + graph. You could add:
+
+Optional keyword filter: require some overlap between error keywords and section text before accepting a match.
+
+Simple boosts:
+
+If the error contains a code like XYZ-123, prefer sections that mention that token exactly.
+
+If log text mentions a component name (“IngestionService”), boost sections that mention it.
+
+You can keep all that in the Python script so the agent stays deterministic.
+
+c) “Sanity check” against multiple sections
+
+If the top 2–3 sections have wildly different headings (e.g., “Network failure” vs “Database corruption”), have the script:
+
+Lower confidence, and/or
+
+Tell the user:
+
+“I found multiple very different candidate causes: A vs B.
+Can you confirm whether you’re seeing network errors or database errors?”
+
+That’s a nice safety/UX win.
+
+3. Admin / maintenance features
+
+These are big for long-term value.
+
+a) Logging unanswered / low-confidence queries
+
+You can add a very simple log file, e.g. data/query_log.jsonl where the script appends:
+
+timestamp
+
+question + error text (anonymized if needed)
+
+top section IDs
+
+confidence
+
+Then you (or L2 support) can:
+
+See what users ask that doesn’t match the guide.
+
+Use that to update the guide or refine sectioning/headings.
+
+Periodically re-run build_troubleshooting_kb.py when docs improve.
+
+b) Version awareness
+
+If your app has versions, you could:
+
+Tag each guide build with a version: guide_enhanced_v1.2.3.md, etc.
+
+Add a --version argument to the build script and store it in the embeddings JSON.
+
+Have the agent:
+
+Ask “What version are you on?” and
+
+Prefer the guide artifacts that match that version (or warn if doc version < app version).
+
+c) Regression test harness for the KB
+
+You can create a small scripts/test_troubleshooting_kb.py that:
+
+Contains a set of known error → expected section pairs.
+
+Runs the answer script and checks whether the top-1 or top-3 contains the expected section.
+
+Every time you update the guide and rebuild, you can run the tests to make sure retrieval hasn’t silently degraded.
+
+4. Better “support agent” feel (without acting)
+
+You want a Re (reasoning/research) agent, not an Act agent. Some enhancements that stay within that:
+
+a) Escalation template
+
+If confidence is low or there are conflicting solutions, the agent can:
+
+Offer a pre-formatted escalation note you can paste into Jira/email:
+
+“Here’s a summary you can send to L2:
+– Error: …
+– Environment: …
+– Steps tried: …
+– Relevant guide sections reviewed: …
+– Why the guide didn’t fully resolve it: …”
+
+No actual sending, just drafting.
+
+b) “Checklist mode”
+
+Sometimes support wants a checklist rather than prose. You could:
+
+Add a mode: “give me this as a checklist”
+
+The script already builds steps; agent just formats them as:
+
+[ ] Step 1: …
+[ ] Step 2: …
+[ ] Step 3: …
+
+
+This is trivial but feels very “ops-friendly”.
+
+c) Explainability / “why this section”
+
+Have the answer script also include a short reason per solution:
+
+e.g. “shares error code ABC-123 and keywords ‘timeout’ and ‘connection’.”
+
+Then the agent can show:
+
+“I picked this section because it mentions the same error code and a timeout when connecting to the upstream service.”
+
+That builds trust with engineers.
+
+5. Developer tools for you
+
+Since you’re going to be the power user:
+
+a) A “raw candidates” prompt
+
+Create another prompt file like /debug-troubleshooting-kb that:
+
+Runs the answer script.
+
+Then shows you:
+
+Raw similarity scores.
+
+Top 10 candidate headings.
+
+A short excerpt of each.
+
+Useful when you’re tuning sectioning or embeddings, without changing the user-facing agent.
+
+b) Quick “what changed between guide versions?” view
+
+When you rebuild from a new guide version:
+
+Have the build script dump a small summary JSON:
+
+number of sections
+
+list of new headings vs previous run
+
+Then an admin prompt /kb-diff-summary could:
+
+Load both summaries.
+
+Tell you which errors/sections were added/removed/renamed.
+
+Great for change management.
+
+6. Where to plug these in
+
+All of these ideas can be implemented without changing the Copilot + agent wiring:
+
+Anything that changes ranking / confidence / logging → goes into:
+
+build_troubleshooting_kb.py (for indexing-time changes), or
+
+answer_troubleshooting_question.py (for query-time changes).
+
+Anything about how you talk to the user → goes into:
+
+SKILL.md (what the agent should do with the script outputs), and
+
+The agent + prompt .md files (how to structure the response and when to escalate).
+
+So you stay 100% in your preferred pattern:
+
+Pre-built, tested Python modules + thin agent wrapper + clear instructions.
+
+If you tell me which of these feels highest priority (e.g., confidence gating + logging vs version-awareness vs debug prompt), I can help you extend the scaffold you already downloaded with concrete changes to the scripts and the markdown instruction files.
+
+all these are excellent suggestions, re-create the downloadable zip file with all the above suggestions - every where in the files, rename this agent to "GSF IR Support Agent"
+Thought for 8s
+
+Nice, we’ve upgraded your whole setup into the GSF IR Support Agent with all the extra features baked in.
+
+Here’s the new project:
+
+📦 Download the updated GSF IR Support Agent scaffold
+
+What changed vs the previous zip
+
+All changes are already wired into the code + markdown:
+
+1. Agent name
+
+Everywhere the agent is now called “GSF IR Support Agent”:
+
+.github/agents/gsf-ir-support.agent.md
+
+All prompts (start-support-session, refresh-troubleshooting-kb, debug-troubleshooting-kb)
+
+README text/instructions
+
+You’ll select GSF IR Support Agent from the Agents dropdown in VS Code.
+
+2. Smarter answering (confidence & modes)
+
+In scripts/answer_troubleshooting_question.py:
+
+Adds a --mode flag:
+
+--mode quick → fewer steps, concise.
+
+--mode deep → more sentences/steps from the section for explanation.
+
+Computes a confidence score and band:
+
+high for score ≥ 0.8
+
+medium for 0.5–0.8
+
+low for < 0.5
+
+The markdown answer now includes:
+
+“Confidence: high/medium/low (score …)”
+
+An extra warning line if confidence is low.
+
+The SKILL + agent instructions tell Copilot:
+
+Use quick by default.
+
+Switch to deep when the user asks “why”, “explain”, etc.
+
+If band is low, call that out and suggest more context/escalation.
+
+3. Query logging
+
+Every call to the answer script now appends to:
+
+.github/skills/troubleshooting-kb/data/query_log.jsonl
+
+Each line is JSON with:
+
+question
+
+error_text
+
+guide_version
+
+top solution IDs/headings/scores
+
+confidence + band
+
+timestamp
+
+So you can later mine:
+
+Which errors users ask about most.
+
+Which queries are consistently low-confidence.
+
+Nothing for you to configure; it happens automatically.
+
+4. Version awareness
+
+build_troubleshooting_kb.py now supports:
+
+--guide-version "v1.0" (optional)
+
+It writes that into guide_embeddings.json and the answer script:
+
+reads it back
+
+includes it in last_answer.json as guide_version
+
+the SKILL + agent instructions tell Copilot to mention which guide version was used in answers.
+
+You just pass --guide-version when you (or the agent via /refresh-troubleshooting-kb) rebuild the KB.
+
+5. Regression test harness
+
+New file: scripts/test_troubleshooting_kb.py
+
+Has a TEST_CASES list you can fill with:
+
+name
+
+question
+
+error_text
+
+expected_section_ids (one or more section IDs from your guide)
+
+It:
+
+Calls answer_troubleshooting_question.py for each test.
+
+Checks whether any expected section ID appears in the top-k.
+
+Prints PASS/FAIL and a summary.
+
+You run it like:
+
+python scripts\test_troubleshooting_kb.py
+
+
+Perfect for sanity checks after updating the guide and rebuilding the KB.
+
+6. KB diff summary
+
+New file: scripts/kb_diff_summary.py
+
+Usage:
+
+python scripts\kb_diff_summary.py ^
+  --old .github/skills/troubleshooting-kb/data/guide_embeddings_old.json ^
+  --new .github/skills/troubleshooting-kb/data/guide_embeddings.json
+
+
+It prints:
+
+counts of old/new sections
+
+list of added headings
+
+list of removed headings
+
+You’d typically:
+
+Save a copy of your old embeddings file before rebuild.
+
+Run this script to see what changed structurally in the KB.
+
+7. Prompts & flows updated for GSF IR Support Agent
+
+You now have three prompts:
+
+start-support-session.prompt.md
+
+For normal users.
+
+Uses GSF IR Support Agent.
+
+Asks for env/module/version, then runs the support workflow.
+
+Encourages the agent to format as:
+
+Summary
+
+Root cause
+
+Step-by-step checklist
+
+Alternatives
+
+References
+
+Guide version + confidence band
+
+refresh-troubleshooting-kb.prompt.md
+
+For admins.
+
+Prompts for new PDF/DOCX paths and guide version.
+
+Runs build_troubleshooting_kb.py with --guide-version.
+
+debug-troubleshooting-kb.prompt.md
+
+For you / devs.
+
+Runs answer script with --top-k 10.
+
+Then shows section IDs, headings, scores to help tune the guide.
+
+8. GSF IR Support Agent instructions tuned
+
+In .github/agents/gsf-ir-support.agent.md:
+
+Name: GSF IR Support Agent
+
+Tools: codebase, search, terminal only.
+
+Rules:
+
+Use troubleshooting-kb skill for error questions.
+
+Never write or change Python.
+
+No web / external search.
+
+Always base answer on last_answer.json from the script.
+
+Behavior:
+
+Ask clarifying questions for missing environment/module/version.
+
+Default to --mode quick, upgrade to deep if they want more explanation.
+
+Show guide version + confidence band.
+
+Offer escalation summary when confidence is low or solutions conflict.
+
+How to use this new zip
+
+Download & unzip
+
+Save and unzip:
+gsf_ir_support_agent.zip
+Open that folder in VS Code.
+
+Create venv & install deps
+
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python -m nltk.downloader punkt
+
+
+Drop your guide
+
+Put:
+
+docs/troubleshooting_guide.pdf
+
+docs/troubleshooting_guide.docx (if you have it)
+
+Build the KB
+
+python scripts\build_troubleshooting_kb.py `
+  --pdf docs/troubleshooting_guide.pdf `
+  --docx docs/troubleshooting_guide.docx `
+  --guide-version "v1.0" `
+  --out-markdown .github/skills/troubleshooting-kb/data/guide_enhanced.md `
+  --out-embeddings .github/skills/troubleshooting-kb/data/guide_embeddings.json `
+  --out-graph .github/skills/troubleshooting-kb/data/guide_graph.json
+
+
+Turn on skills & agents
+
+VS Code settings (JSON):
+
+{
+  "chat.useAgentSkills": true,
+  "chat.useAgentsMdFile": true
+}
+
+
+In Copilot Chat
+
+Choose GSF IR Support Agent from the agents dropdown.
+
+Type /start-support-session to begin a normal support flow.
+
+Type /refresh-troubleshooting-kb when you update the guide.
+
+Type /debug-troubleshooting-kb when you want to inspect retrieval.
